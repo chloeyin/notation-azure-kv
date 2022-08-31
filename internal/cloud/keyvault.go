@@ -10,8 +10,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Azure/notation-azure-kv/internal/crypto"
-
 	"github.com/Azure/azure-sdk-for-go/services/keyvault/auth"
 	"github.com/Azure/azure-sdk-for-go/services/keyvault/v7.1/keyvault"
 	"github.com/Azure/go-autorest/autorest"
