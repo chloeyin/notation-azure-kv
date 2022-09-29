@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"errors"
+	"fmt"
 	"net/http"
 
 	// Make required hashers available.
@@ -12,18 +13,19 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/keyvault/v7.1/keyvault"
 	"github.com/Azure/go-autorest/autorest/azure"
-
-	"github.com/notaryproject/notation-go"
 	"github.com/notaryproject/notation-go/plugin"
 )
 
 func Sign(ctx context.Context, req *plugin.GenerateSignatureRequest) (*plugin.GenerateSignatureResponse, error) {
+	// validate request
 	if req == nil || req.KeyID == "" || req.KeySpec == "" || req.Hash == "" {
 		return nil, plugin.RequestError{
 			Code: plugin.ErrorCodeValidation,
 			Err:  errors.New("invalid request input"),
 		}
 	}
+
+	// create azure-keyvault client
 	key, err := newKey(req.KeyID, req.PluginConfig)
 	if err != nil {
 		return nil, plugin.RequestError{
@@ -31,32 +33,45 @@ func Sign(ctx context.Context, req *plugin.GenerateSignatureRequest) (*plugin.Ge
 			Err:  err,
 		}
 	}
-	cert, err := key.Certificate(ctx)
+
+	// get keySpec
+	keySpec, err := plugin.ParseKeySpec(req.KeySpec)
 	if err != nil {
-		return nil, requestErr(err)
+		return nil, err
 	}
 
-	alg := keySpecToAlg(req.KeySpec)
-	if alg == "" {
+	// get hash and validate hash
+	if name := plugin.KeySpecHashString(keySpec); name != req.Hash {
+		return nil, requestErr(fmt.Errorf("keySpec hash:%v mismatch request hash:%v", name, req.Hash))
+	}
+
+	// get signing alg
+	signAlg := keySpecToAlg(req.KeySpec)
+	if signAlg == "" {
 		return nil, errors.New("unrecognized key spec: " + string(req.KeySpec))
 	}
 
 	// Digest.
-	hashed, err := computeHash(req.Hash.HashFunc(), req.Payload)
+	hashed, err := computeHash(keySpec.SignatureAlgorithm().Hash(), req.Payload)
 	if err != nil {
 		return nil, err
 	}
 
 	// Sign.
-	sig, err := key.Sign(ctx, alg, hashed)
+	sig, err := key.Sign(ctx, signAlg, hashed)
 	if err != nil {
 		return nil, requestErr(err)
 	}
 
+	// get certificate
+	cert, err := key.Certificate(ctx)
+	if err != nil {
+		return nil, requestErr(err)
+	}
 	return &plugin.GenerateSignatureResponse{
 		KeyID:            req.KeyID,
 		Signature:        sig,
-		SigningAlgorithm: req.KeySpec.SignatureAlgorithm(),
+		SigningAlgorithm: plugin.SigningAlgorithmString(keySpec.SignatureAlgorithm()),
 		CertificateChain: [][]byte{cert.Raw},
 	}, nil
 }
@@ -94,19 +109,19 @@ func computeHash(hash crypto.Hash, message []byte) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
-func keySpecToAlg(k notation.KeySpec) keyvault.JSONWebKeySignatureAlgorithm {
+func keySpecToAlg(k string) keyvault.JSONWebKeySignatureAlgorithm {
 	switch k {
-	case notation.RSA_2048:
+	case plugin.RSA_2048:
 		return keyvault.PS256
-	case notation.RSA_3072:
+	case plugin.RSA_3072:
 		return keyvault.PS384
-	case notation.RSA_4096:
+	case plugin.RSA_4096:
 		return keyvault.PS512
-	case notation.EC_256:
+	case plugin.EC_256:
 		return keyvault.ES256
-	case notation.EC_384:
+	case plugin.EC_384:
 		return keyvault.ES384
-	case notation.EC_512:
+	case plugin.EC_521:
 		return keyvault.ES512
 	}
 	return ""
